@@ -2,10 +2,8 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
-// 連接 MongoDB
 mongoose.connect(process.env.DB);
 
-// 定義 Reply Schema
 const ReplySchema = new Schema({
   text: { type: String, required: true },
   delete_password: { type: String, required: true },
@@ -13,7 +11,6 @@ const ReplySchema = new Schema({
   reported: { type: Boolean, default: false }
 });
 
-// 定義 Thread Schema
 const ThreadSchema = new Schema({
   text: { type: String, required: true },
   delete_password: { type: String, required: true },
@@ -33,10 +30,13 @@ module.exports = function (app) {
       const { text, delete_password } = req.body;
       const board = req.params.board;
       
+      const now = new Date();
       const thread = new Thread({
         text,
         delete_password,
-        board
+        board,
+        created_on: now,
+        bumped_on: now
       });
 
       try {
@@ -51,12 +51,17 @@ module.exports = function (app) {
       const board = req.params.board;
       try {
         const threads = await Thread.find({ board })
-          .select('-reported -delete_password')
-          .sort('-bumped_on')
+          .select({
+            reported: 0,
+            delete_password: 0,
+            'replies.delete_password': 0,
+            'replies.reported': 0
+          })
+          .sort({ bumped_on: -1 })
           .limit(10);
 
         threads.forEach(thread => {
-          thread.replies = thread.replies.slice(-3);
+          thread.replies = thread.replies.slice(-3).reverse();
         });
 
         res.json(threads);
@@ -70,14 +75,17 @@ module.exports = function (app) {
       
       try {
         const thread = await Thread.findById(thread_id);
-        if(thread.delete_password === delete_password) {
+        if (!thread) {
+          return res.send('incorrect password');
+        }
+        if (thread.delete_password === delete_password) {
           await Thread.findByIdAndDelete(thread_id);
           res.send('success');
         } else {
           res.send('incorrect password');
         }
       } catch(err) {
-        res.json({ error: 'could not delete thread' });
+        res.send('incorrect password');
       }
     })
 
@@ -85,10 +93,16 @@ module.exports = function (app) {
       const { thread_id } = req.body;
       
       try {
-        await Thread.findByIdAndUpdate(thread_id, { reported: true });
+        const result = await Thread.findByIdAndUpdate(
+          thread_id,
+          { $set: { reported: true } }
+        );
+        if (!result) {
+          return res.send('thread not found');
+        }
         res.send('reported');
       } catch(err) {
-        res.json({ error: 'could not report thread' });
+        res.send('thread not found');
       }
     });
     
@@ -96,11 +110,21 @@ module.exports = function (app) {
     .post(async (req, res) => {
       const { thread_id, text, delete_password } = req.body;
       const board = req.params.board;
+      const now = new Date();
       
       try {
         const thread = await Thread.findById(thread_id);
-        thread.replies.push({ text, delete_password });
-        thread.bumped_on = new Date();
+        if (!thread) {
+          return res.json({ error: 'thread not found' });
+        }
+        
+        thread.replies.push({
+          text,
+          delete_password,
+          created_on: now
+        });
+        thread.bumped_on = now;
+        
         await thread.save();
         res.redirect(`/b/${board}/${thread_id}`);
       } catch(err) {
@@ -113,7 +137,17 @@ module.exports = function (app) {
       
       try {
         const thread = await Thread.findById(thread_id)
-          .select('-reported -delete_password -replies.reported -replies.delete_password');
+          .select({
+            reported: 0,
+            delete_password: 0,
+            'replies.reported': 0,
+            'replies.delete_password': 0
+          });
+          
+        if (!thread) {
+          return res.json({ error: 'thread not found' });
+        }
+        
         res.json(thread);
       } catch(err) {
         res.json({ error: 'could not get replies' });
@@ -125,9 +159,16 @@ module.exports = function (app) {
       
       try {
         const thread = await Thread.findById(thread_id);
-        const reply = thread.replies.id(reply_id);
+        if (!thread) {
+          return res.send('incorrect password');
+        }
         
-        if(reply.delete_password === delete_password) {
+        const reply = thread.replies.id(reply_id);
+        if (!reply) {
+          return res.send('incorrect password');
+        }
+        
+        if (reply.delete_password === delete_password) {
           reply.text = '[deleted]';
           await thread.save();
           res.send('success');
@@ -135,7 +176,7 @@ module.exports = function (app) {
           res.send('incorrect password');
         }
       } catch(err) {
-        res.json({ error: 'could not delete reply' });
+        res.send('incorrect password');
       }
     })
 
@@ -144,13 +185,20 @@ module.exports = function (app) {
       
       try {
         const thread = await Thread.findById(thread_id);
+        if (!thread) {
+          return res.send('thread not found');
+        }
+        
         const reply = thread.replies.id(reply_id);
+        if (!reply) {
+          return res.send('reply not found');
+        }
+        
         reply.reported = true;
         await thread.save();
         res.send('reported');
       } catch(err) {
-        res.json({ error: 'could not report reply' });
+        res.send('report failed');
       }
     });
-
 };
